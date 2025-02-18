@@ -1,309 +1,619 @@
-<#
-.SYNOPSIS
-    Update the content of an Office 365 ProPlus application created in ConfigMgr.
+function Get-ConfigurationManagerSiteCode {
+    <#
+    .SYNOPSIS
+        Retrieves the site code from a specified Configuration Manager site server.
 
-.DESCRIPTION
-    This script will ensure that the latest content version is updated when this script is either manually triggered or scheduled to run by doing the following:
-    - Download the latest Office Deployment Tool executable and replace existing setup.exe in application content source path
-    - Update the Office 365 ProPlus application content to the latest version
-    - Update the detection method of the application in ConfigMgr with the latest versioning details
+    .DESCRIPTION
+        This function queries the SMS Provider on a specified Configuration Manager site server
+        to determine the site code. It uses CIM to connect to the root\SMS namespace and
+        retrieves the site code from the SMS_ProviderLocation class.
 
-.PARAMETER SiteServer
-    Site Server where the SMS Provider is installed.
+    .PARAMETER SiteServer
+        The fully qualified domain name (FQDN) or hostname of the Configuration Manager site server
+        that hosts the SMS Provider.
 
-.PARAMETER OfficePackagePath
-    Specify the full path to the Office application content source.
+    .OUTPUTS
+        System.String
+        Returns the site code as a string value.
 
-.PARAMETER OfficeApplicationName
-    Specify the Office application display name.
+    .EXAMPLE
+        PS C:\> Get-ConfigurationManagerSiteCode -SiteServer "CM01.contoso.com"
+        P01
+        This example retrieves the site code from the Configuration Manager server CM01.contoso.com.
+    #>
 
-.PARAMETER OfficeConfigurationFile
-    Specify the Office application configuration file name, e.g. 'configuration.xml'.
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $SiteServer
+    )
 
-.PARAMETER SkipDetectionMethodUpdate
-    When True, update the detection method for the specified Office 365 ProPlus application.
-
-.EXAMPLE
-    # Update the content of an Office 365 ProPlus application named 'Office 365 ProPlus 64-bit' to the latest version:
-    .\Invoke-OPPContentUpdate.ps1 -SiteServer "CM01" -OfficePackagePath "C:\Source\Apps\Office365\x64" -OfficeApplicationName "Office 365 ProPlus 64-bit" -OfficeConfigurationFile "configuration.xml" -SkipDetectionMethodUpdate $false -Verbose
-
-    # Update the content of an Office 365 ProPlus application named 'Office 365 ProPlus 64-bit' to the latest version, but don't update the application detection method:
-    .\Invoke-OPPContentUpdate.ps1 -SiteServer "CM01" -OfficePackagePath "C:\Source\Apps\Office365\x64" -OfficeApplicationName "Office 365 ProPlus 64-bit" -OfficeConfigurationFile "configuration.xml" -SkipDetectionMethodUpdate $true -Verbose
-
-.NOTES
-    FileName:    Invoke-OPPContentUpdate.ps1
-    Author:      Nickolaj Andersen
-    Contact:     @NickolajA
-    Created:     2019-10-22
-    Updated:     2019-10-26
-
-    Version history:
-    1.0.0 - (2019-10-22) Script created
-    1.0.1 - (2019-10-25) Added the SkipDetectionMethodUpdate parameter to provide functionality that will not update the detection method
-    1.0.2 - (2019-10-26) Added so that Distribution Points will automatically be updated
-    1.0.3 - (2020-09-09) Added SiteServer parameter and improved ConfigurationManager module loading to support scheduling this script in system context on a site server with the ConfigMgr console installed
-    1.0.4 - (2020-09-09) Fixed an issue when the SkipDetectionMethodUpdate parameter was set to True, it would remove any additional rules manually added
-#>
-[CmdletBinding(SupportsShouldProcess = $true)]
-param(
-    [parameter(Mandatory = $true, HelpMessage = "Site Server where the SMS Provider is installed.")]
-    [ValidateNotNullOrEmpty()]
-    [ValidateScript({Test-Connection -ComputerName $_ -Count 1 -Quiet})]
-    [string]$SiteServer,
-
-    [parameter(Mandatory = $false, HelpMessage = "Specify the full path to the Office application content source.")]
-    [ValidateNotNullOrEmpty()]
-    [string]$OfficePackagePath = "E:\CMSource\Apps\Microsoft\Office 365 ProPlus\x64",
-
-    [parameter(Mandatory = $false, HelpMessage = "Specify the Office application display name.")]
-    [ValidateNotNullOrEmpty()]
-    [string]$OfficeApplicationName = "Office 365 ProPlus 64-bit (Semi-Annual)",
-
-    [parameter(Mandatory = $false, HelpMessage = "Specify the Office application configuration file name, e.g. 'configuration.xml'.")]
-    [ValidateNotNullOrEmpty()]
-    [string]$OfficeConfigurationFile = "configuration.xml",
-
-    [parameter(Mandatory = $false, HelpMessage = "When True, update the detection method for the specified Office 365 ProPlus application.")]
-    [ValidateNotNullOrEmpty()]
-    [bool]$SkipDetectionMethodUpdate = $true
-)
-Begin {
-    # Determine SiteCode from WMI
-    try {
-        Write-Verbose -Message "Determining Site Code for Site server: '$($SiteServer)'"
-        $SiteCodeObjects = Get-WmiObject -Namespace "root\SMS" -Class SMS_ProviderLocation -ComputerName $SiteServer -ErrorAction Stop
-        foreach ($SiteCodeObject in $SiteCodeObjects) {
-            if ($SiteCodeObject.ProviderForLocalSite -eq $true) {
-                $SiteCode = $SiteCodeObject.SiteCode
-                Write-Verbose -Message "Site Code: $($SiteCode)"
-            }
-        }
-    }
-    catch [System.Exception] {
-        Write-Warning -Message "Unable to determine site code from specified Configuration Manager site server, specify the site server where the SMS Provider is installed"; break
+    begin {
+        Write-Verbose -Message "Determining Site Code for Site Server: $siteServer"
     }
 
-    # Import ConfigMgr module, required to update the detection method of the Office application
-    try {
-        Import-Module -Name ConfigurationManager -ErrorAction Stop
-    }
-    catch [System.Exception] {
+    process {
         try {
-            Import-Module (Join-Path -Path (($env:SMS_ADMIN_UI_PATH).Substring(0,$env:SMS_ADMIN_UI_PATH.Length-5)) -ChildPath "\ConfigurationManager.psd1") -Force -ErrorAction Stop
-            if ((Get-PSDrive $SiteCode -ErrorAction SilentlyContinue | Measure-Object).Count -ne 1) {
-                New-PSDrive -Name $SiteCode -PSProvider "AdminUI.PS.Provider\CMSite" -Root $SiteServer -ErrorAction Stop
+            $siteCode = Get-CimInstance -Namespace 'root\SMS' -Class SMS_ProviderLocation -ComputerName $SiteServer -ErrorAction Stop -Verbose:$false | Where-Object { $_.ProviderForLocalSite -eq $true } | Select-Object -First 1 -ExpandProperty SiteCode
+
+            if ($null -eq $siteCode) {
+                throw "No local site provider found on server '$SiteServer'"
             }
         }
-        catch [System.Exception] {
-            Write-Warning -Message "Failed to load the ConfigurationManager module. Error message: $($_.Exception.Message)"; break
+        catch {
+            Write-Warning -Message 'Unable to determine site code from specified Configuration Manager site server. Ensure the SMS Provider is installed.'
+            throw $($_.Exception.Message)
         }
-    }   
+    }
+
+    end {
+        $siteCode
+    }
 }
-Process {
-    # Functions
-    function Start-DownloadFile {
-        param(
-            [parameter(Mandatory=$true)]
-            [ValidateNotNullOrEmpty()]
-            [string]$URL,
-    
-            [parameter(Mandatory=$true)]
-            [ValidateNotNullOrEmpty()]
-            [string]$Path,
-    
-            [parameter(Mandatory=$true)]
-            [ValidateNotNullOrEmpty()]
-            [string]$Name
-        )
-        Begin {
-            # Construct WebClient object
-            $WebClient = New-Object -TypeName System.Net.WebClient
-        }
-        Process {
-            # Create path if it doesn't exist
-            if (-not(Test-Path -Path $Path)) {
-                New-Item -Path $Path -ItemType Directory -Force | Out-Null
-            }
-    
-            # Start download of file
-            $WebClient.DownloadFile($URL, (Join-Path -Path $Path -ChildPath $Name))
-        }
-        End {
-            # Dispose of the WebClient object
-            $WebClient.Dispose()
-        }
-    }
 
-    Write-Verbose -Message "Initiating Office application content update process"
+function Import-ConfigurationManagerModule {
+    <#
+    .SYNOPSIS
+        Imports the Configuration Manager PowerShell module and sets up the required PSDrive.
 
-    try {
-        # Download latest Office Deployment Tool
-        $ODTDownloadURL = "https://www.microsoft.com/en-us/download/confirmation.aspx?id=49117"
-        $WebResponseURL = ((Invoke-WebRequest -Uri $ODTDownloadURL -UseBasicParsing -ErrorAction Stop -Verbose:$false).links | Where-Object { $_.outerHTML -like "*click here to download manually*" }).href
-        $ODTFileName = Split-Path -Path $WebResponseURL -Leaf
-        $ODTFilePath = (Join-Path -Path $env:windir -ChildPath "Temp")
-        Write-Verbose -Message "Attempting to download latest Office Deployment Toolkit executable"
-        Start-DownloadFile -URL $WebResponseURL -Path $ODTFilePath -Name $ODTFileName
+    .DESCRIPTION
+        This function attempts to import the Configuration Manager PowerShell module using two methods:
+        1. Direct import using Import-Module
+        2. Alternative import using the SMS_ADMIN_UI_PATH environment variable
 
+        After successful import, it creates a PSDrive for the specified site code if it doesn't exist.
+
+    .PARAMETER SiteCode
+        The Configuration Manager site code (e.g., 'P01' or 'PS1') that will be used
+        for the PSDrive creation.
+
+    .PARAMETER SiteServer
+        The fully qualified domain name (FQDN) or hostname of the Configuration Manager
+        site server that hosts the SMS Provider.
+
+    .EXAMPLE
+        PS C:\> Import-ConfigurationManagerModule -SiteCode "PS1" -SiteServer "SCCM01.contoso.com"
+        Imports the ConfigMgr module and creates a PS1: drive mapped to SCCM01.contoso.com
+    #>
+
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $SiteCode,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $SiteServer
+    )
+
+    begin {}
+
+    process {
         try {
-            # Extract latest ODT file
-            $ODTExecutable = (Join-Path -Path $ODTFilePath -ChildPath $ODTFileName)
-            $ODTExtractionPath = (Join-Path -Path $ODTFilePath -ChildPath (Get-ChildItem -Path $ODTExecutable).VersionInfo.ProductVersion)
-            $ODTExtractionArguments = "/quiet /extract:$($ODTExtractionPath)"
-
-            # Extract ODT files
-            Write-Verbose -Message "Attempting to extract the setup.exe executable from Office Deployment Toolkit"
-            Start-Process -FilePath $ODTExecutable -ArgumentList $ODTExtractionArguments -Wait -ErrorAction Stop
-
+            Import-Module -Name ConfigurationManager -ErrorAction Stop -Verbose:$false
+            Write-Verbose 'Successfully imported ConfigurationManager module'
+        }
+        catch {
+            Write-Warning 'Direct import failed, attempting alternative import method'
             try {
-                # Determine if ODT needs to be updated in Office package folder
-                $ODTCurrentVersion = (Get-ChildItem -Path (Join-Path -Path $OfficePackagePath -ChildPath "setup.exe") -ErrorAction Stop).VersionInfo.ProductVersion
-                Write-Verbose -Message "Determined current Office Deployment Toolkit version as: $($ODTCurrentVersion)"
-                $ODTLatestVersion = (Get-ChildItem -Path (Join-Path -Path $ODTExtractionPath -ChildPath "setup.exe") -ErrorAction Stop).VersionInfo.ProductVersion
-                Write-Verbose -Message "Determined latest Office Deployment Toolkit version as: $($ODTLatestVersion)"
-
-                try {
-                    if ([System.Version]$ODTLatestVersion -gt [System.Version]$ODTCurrentVersion) {
-                        # Replace existing setup.exe in Office package path with extracted
-                        Write-Verbose -Message "Current Office Deployment Toolkit version needs to be updated to latest version, attempting to copy latest setup.exe"
-                        Copy-Item -Path (Join-Path -Path $ODTExtractionPath -ChildPath "setup.exe") -Destination (Join-Path -Path $OfficePackagePath -ChildPath "setup.exe") -Force -ErrorAction Stop
-                    }
-
-                    try {
-                        # Cleanup downloaded ODT content and executable
-                        Write-Verbose -Message "Attempting to remove downloaded Office Deployment Toolkit temporary content files"
-                        Remove-Item -Path $ODTExtractionPath -Recurse -Force -ErrorAction Stop
-                        Remove-Item -Path $ODTExecutable -Force -ErrorAction Stop
-
-                        try {
-                            # Determine existing Office package version in \office\data folder
-                            Write-Verbose -Message "Attempting to detect currect version information for existing Office 365 ProPlus content"
-                            $OfficeDataFolderRoot = (Join-Path -Path $OfficePackagePath -ChildPath "office\data")
-                            $OfficeDataFolderCurrent = Get-ChildItem -Path $OfficeDataFolderRoot -Directory -ErrorAction Stop
-                            $OfficeDataFileCurrent = Get-ChildItem -Path $OfficeDataFolderRoot -Filter "v*_*.cab" -ErrorAction Stop
-
-                            try {
-                                # Construct arguments for setup.exe and call the executable and let it complete before we continue
-                                $OfficeArguments = "/download $($OfficeConfigurationFile)"
-                                Write-Verbose -Message "Attempting to update the Office 365 ProPlus application content based on configuration file"
-                                Start-Process -FilePath "setup.exe" -ArgumentList $OfficeArguments -WorkingDirectory $OfficePackagePath -Wait -ErrorAction Stop
-
-                                # Cleanup older Office data folder versions
-                                Write-Verbose -Message "Checking to see if previous Office 365 ProPlus application content version should be removed"
-                                if ((Get-ChildItem -Path $OfficeDataFolderRoot -Directory | Measure-Object).Count -ge 2) {
-                                    Write-Verbose -Message "Previous Office 365 ProPlus application content should be cleaned up"
-
-                                    # Remove old data folder
-                                    Write-Verbose -Message "Attempting to remove Office 365 ProPlus application content directory: $($OfficeDataFolderCurrent.Name)"
-                                    Remove-Item -Path $OfficeDataFolderCurrent.FullName -Recurse -Force
-
-                                    # Remove old data cab file
-                                    Write-Verbose -Message "Attempting to remove Office 365 ProPlus application content cabinet file: $($OfficeDataFileCurrent.Name)"
-                                    Remove-Item -Path $OfficeDataFileCurrent.FullName -Force
-                                }
-
-                                try {
-                                    # Get latest Office data version
-                                    $OfficeDataLatestVersion = (Get-ChildItem -Path $OfficeDataFolderRoot -Directory -ErrorAction Stop).Name
-                                    Write-Verbose -Message "Office 365 ProPlus application content is now determined at version: $($OfficeDataLatestVersion)"
-
-                                    try {
-                                        # Set location to ConfigMgr drive
-                                        Write-Verbose -Message "Changing location to ConfigMgr drive: $($SiteCode):"
-                                        Set-Location -Path ($SiteCode + ":") -ErrorAction Stop -Verbose:$false
-
-                                        try {
-                                            # Get Office application deployment type object
-                                            Write-Verbose -Message "Attempting to retrieve Office 365 ProPlus application deployment type for application: $($OfficeApplicationName)"
-                                            $OfficeDeploymentType = Get-CMDeploymentType -ApplicationName $OfficeApplicationName -ErrorAction Stop -Verbose:$false
-
-                                            if ($SkipDetectionMethodUpdate -eq $false) {
-                                                try {
-                                                    # Create a new registry detection method
-                                                    Write-Verbose -Message "Attempting to create new registry detection clause object for Office 365 ProPlus application deployment type: $($OfficeDeploymentType.LocalizedDisplayName)"
-                                                    $DetectionClauseArgs = @{
-                                                        ExpressionOperator = "GreaterEquals"
-                                                        Hive = "LocalMachine"
-                                                        KeyName = "Software\Microsoft\Office\ClickToRun\Configuration"
-                                                        PropertyType = "Version"
-                                                        ValueName = "VersionToReport"
-                                                        ExpectedValue = $OfficeDataLatestVersion
-                                                        Value = $true
-                                                        ErrorAction = "Stop"
-                                                        Verbose = $false
-                                                    }
-                                                    $DetectionClauseRegistryKeyValue = New-CMDetectionClauseRegistryKeyValue @DetectionClauseArgs
-    
-                                                    try {
-                                                        # Construct string array with logical name of enhanced detection method registry name
-                                                        [string[]]$OfficeApplicationDetectionMethodLogicalName = ([xml]$OfficeDeploymentType.SDMPackageXML).AppMgmtDigest.DeploymentType.Installer.CustomData.EnhancedDetectionMethod.Settings.SimpleSetting | Where-Object { $PSItem.DataType -like "Version" } | Select-Object -ExpandProperty LogicalName
-                                                        Write-Verbose -Message "Enhanced detection method logical name for existing registry detection clause was determined as: $($OfficeApplicationDetectionMethodLogicalName)"
-    
-                                                        # Remove existing detection method and add new with updated version info
-                                                        Write-Verbose -Message "Attempting to replace existing detection clause with new containing latest Office 365 ProPlus application content version"
-                                                        Set-CMScriptDeploymentType -InputObject $OfficeDeploymentType -RemoveDetectionClause $OfficeApplicationDetectionMethodLogicalName -AddDetectionClause $DetectionClauseRegistryKeyValue -ErrorAction Stop  -Verbose:$false
-                                                    }
-                                                    catch [System.Exception] {
-                                                        Write-Warning -Message "Failed to update registry detection clause for Office 365 ProPlus application deployment type. Error message: $($_.Exception.Message)"
-                                                    }
-                                                }
-                                                catch [System.Exception] {
-                                                    Write-Warning -Message "Failed to create new registry detection clause object. Error message: $($_.Exception.Message)"
-                                                }
-                                            }
-                                            
-                                            try {
-                                                # Update Distribution Points
-                                                Write-Verbose -Message "Attempting to update Distribution Points for application: $($OfficeApplicationName)"
-                                                Update-CMDistributionPoint -ApplicationName $OfficeApplicationName -DeploymentTypeName $OfficeDeploymentType.LocalizedDisplayName -ErrorAction Stop -Verbose:$false
-
-                                                Write-Verbose -Message "Successfully completed Office 365 ProPlus application content update process"
-                                            }
-                                            catch [System.Exception] {
-                                                Write-Warning -Message "Failed to update Distribution Points for application. Error message: $($_.Exception.Message)"
-                                            }
-                                        }
-                                        catch [System.Exception] {
-                                            Write-Warning -Message "Failed to retrieve deployment type object for Office 365 ProPlus application. Error message: $($_.Exception.Message)"
-                                        }                                            
-                                    }
-                                    catch [System.Exception] {
-                                        Write-Warning -Message "Failed to change current location to ConfigMgr drive. Error message: $($_.Exception.Message)"
-                                    }
-                                }
-                                catch [System.Exception] {
-                                    Write-Warning -Message "Failed to determine the latest Office 365 application content version. Error message: $($_.Exception.Message)"
-                                }
-                            }
-                            catch [System.Exception] {
-                                Write-Warning -Message "Failed to update Office 365 ProPlus application content. Error message: $($_.Exception.Message)"
-                            }
-                        }
-                        catch [System.Exception] {
-                            Write-Warning -Message "Failed to detect currect version information for existing Office 365 ProPlus content. Error message: $($_.Exception.Message)"
-                        }
-                    }
-                    catch [System.Exception] {
-                        Write-Warning -Message "Failed to cleanup downloaded Office Deployment Toolkit content from temporary location. Error message: $($_.Exception.Message)"
-                    }
+                if (-not $env:SMS_ADMIN_UI_PATH) {
+                    throw 'SMS_ADMIN_UI_PATH environment variable not found'
                 }
-                catch [System.Exception] {
-                    Write-Warning -Message "Failed to copy new setup.exe to Office application content source. Error message: $($_.Exception.Message)"
+
+                $configManagerModulePath = Join-Path -Path (($env:SMS_ADMIN_UI_PATH).Substring(0, $env:SMS_ADMIN_UI_PATH.Length - 5)) -ChildPath 'ConfigurationManager.psd1'
+
+                if (-not (Test-Path -Path $configManagerModulePath)) {
+                    throw "ConfigurationManager module not found at: $configManagerModulePath"
                 }
+
+                Write-Verbose "Importing ConfigurationManager module from: $configManagerModulePath"
+                Import-Module $configManagerModulePath -Force -ErrorAction Stop -Verbose:$false
+
+                # Create PSDrive if it doesn't exist
+                if ($null -eq (Get-PSDrive -Name $siteCode -ErrorAction SilentlyContinue)) {
+                    Write-Verbose "Creating PSDrive for site code: $siteCode"
+                    New-PSDrive -Name $siteCode -PSProvider CMSite -Root $siteServer -ErrorAction Stop | Out-Null
+                }
+
+                Write-Verbose 'Successfully imported ConfigurationManager module using alternative method'
             }
-            catch [System.Exception] {
-                Write-Warning -Message "Failed to determine version numbers for Office Deployment Toolkit for comparison. Error message: $($_.Exception.Message)"
+            catch {
+                Write-Warning 'Failed to load the ConfigurationManager module'
+                throw $_.Exception.Message
             }
         }
-        catch [System.Exception] {
-            Write-Warning -Message "Failed to extract Office Deployment Toolkit. Error message: $($_.Exception.Message)"
+    }
+
+    end {}
+}
+
+function Get-OfficeDeploymentToolDownloadUrl {
+    <#
+    .SYNOPSIS
+        Retrieves the download URL for the latest Office Deployment Tool.
+
+    .DESCRIPTION
+        This function scrapes the Microsoft Download Center page for the Office Deployment Tool
+        to obtain the latest download URL. It parses the HTML content to find the download link
+        associated with the ODT executable.
+
+    .OUTPUTS
+        [PSCustomObject] Returns an object containing:
+        - DownloadUrl: The direct download URL for the Office Deployment Tool
+        - FileName: The name of the executable file
+
+    .EXAMPLE
+        PS C:\> $odtInfo = Get-OfficeDeploymentToolDownloadUrl
+        PS C:\> $odtInfo.DownloadUrl
+        https://download.microsoft.com/download/2/7/A/27AF1BE6-DD20-4CB4-B154-EBAB8A7D4A7E/officedeploymenttool_12345-20000.exe
+
+    .NOTES
+        Known Issues:
+        - The parsing logic may need updates if Microsoft changes their download page structure
+        - The download URL (id=49117) may change in future Microsoft website updates
+    #>
+
+    [CmdletBinding()]
+    [OutputType([PSCustomObject])]
+    param()
+
+    begin {
+        # This URL can change in the future
+        $downloadPageUrl = 'https://www.microsoft.com/en-us/download/details.aspx?id=49117'
+    }
+
+    process {
+        try {
+            Write-Verbose "Parsing Office Deployment Tool download page: $downloadPageUrl"
+            $webResponse = Invoke-WebRequest -Uri $downloadPageUrl -UseBasicParsing -ErrorAction Stop -Verbose:$false
+
+            # This parsing might need to be updated if the page changes. Currently, the download link is found by searching for the 'Download' span element and extracting the href attribute
+            $downloadUrl = ($webResponse.Links | Where-Object { $_.outerHTML -match '<span[^>]*>Download</span>' }).href
+
+
+            if ([string]::IsNullOrWhiteSpace($downloadUrl)) {
+                throw 'Parsing of download page failed, unable to find download link. Please inspect the page structure and update the script accordingly.'
+            }
+        }
+        catch {
+            Write-Warning 'Failed to parse Office Deployment Tool download page'
+            throw $($_.Exception.Message)
         }
     }
-    catch [System.Exception] {
-        Write-Warning -Message "Failed to download the latest Office Deployment Toolkit. Error message: $($_.Exception.Message)"
+    end {
+        # Return download information
+        [PSCustomObject]@{
+            DownloadUrl = $downloadUrl
+            FileName    = Split-Path -Path $downloadUrl -Leaf
+        }
     }
 }
-End {
-    # Set location back to filesystem drive
-    Set-Location -Path $env:SystemDrive
+
+function Start-OfficeDeploymentToolDownload {
+    <#
+    .SYNOPSIS
+        Downloads the Office Deployment Tool executable from Microsoft.
+
+    .DESCRIPTION
+        This function downloads the Office Deployment Tool (ODT) executable from Microsoft's servers.
+        It creates the destination directory if needed, downloads the file, and verifies the download
+        was successful by checking file existence and size.
+
+    .PARAMETER OfficeDeploymentToolDownloadInformation
+        A PSCustomObject containing:
+        - DownloadUrl: The direct download URL for the Office Deployment Tool
+        - FileName: The name of the executable file to be downloaded
+
+    .PARAMETER DestinationPath
+        The full file system path where the Office Deployment Tool executable will be downloaded.
+        If the directory doesn't exist, it will be created.
+
+    .PARAMETER TimeoutSeconds
+        Optional. The number of seconds to wait for the download to complete before timing out.
+        Default value is 300 seconds (5 minutes).
+
+    .OUTPUTS
+        System.String
+        Returns the full path to the downloaded Office Deployment Tool executable.
+
+    .EXAMPLE
+        PS C:\> $downloadInfo = @{
+            DownloadUrl = "https://download.microsoft.com/download/2/7/A/27AF1BE6-DD20-4CB4-B154-EBAB8A7D4A7E/officedeploymenttool_12345-20000.exe"
+            FileName = "officedeploymenttool_12345-20000.exe"
+        }
+        PS C:\> Start-OfficeDeploymentToolDownload -OfficeDeploymentToolDownloadInformation $downloadInfo -DestinationPath "C:\Temp\ODT"
+        Downloads the ODT executable to C:\Temp\ODT\officedeploymenttool_12345-20000.exe
+    #>
+
+    [CmdletBinding()]
+    [OutputType([string])]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [PSCustomObject]
+        $OfficeDeploymentToolDownloadInformation,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $DestinationPath,
+
+        [Parameter(Mandatory = $false)]
+        [int]
+        $TimeoutSeconds = 300
+    )
+
+    begin {
+        Write-Host 'Starting Office Deployment Tool self-extracting executable download' -ForegroundColor Cyan
+        $downloadFilePath = Join-Path -Path $destinationPath -ChildPath $OfficeDeploymentToolDownloadInformation.FileName
+    }
+
+    process {
+        try {
+            # Ensure destination directory exists
+            if (-not(Test-Path -Path $destinationPath)) {
+                Write-Verbose "Creating directory: $destinationPath"
+                New-Item -Path $destinationPath -ItemType Directory -Force | Out-Null
+            }
+
+            # Configure download Parameters
+            $downloadParams = @{
+                Uri             = $officeDeploymentToolDownloadInformation.DownloadUrl
+                OutFile         = $downloadFilePath
+                Method          = 'GET'
+                UseBasicParsing = $true
+                TimeoutSec      = $TimeoutSeconds
+                ErrorAction     = 'Stop'
+                Verbose         = $false
+            }
+
+            Write-Verbose "Downloading Office Deployment Tool self-extracting executable from: $($officeDeploymentToolDownloadInformation.DownloadUrl)"
+            Write-Verbose "Destination: $downloadFilePath"
+
+            # Start download with progress
+            Invoke-RestMethod @downloadParams
+
+            # Verify download
+            if (Test-Path -Path $downloadFilePath) {
+                $downloadedFile = Get-Item -Path $downloadFilePath
+
+                if ($downloadedFile.Length -gt 0) {
+                    Write-Verbose "Successfully downloaded Office Deployment Tool self-extracting executable (Size: $([math]::Round($downloadedFile.Length/1MB, 2)) MB)"
+                }
+                else {
+                    throw 'Downloaded failed - the file is empty'
+                }
+            }
+            else {
+                throw 'Download failed - file not found'
+            }
+        }
+        catch {
+            Write-Warning 'Failed to download Office Deployment Tool'
+            throw $($_.Exception.Message)
+        }
+    }
+
+    end {
+        $downloadFilePath
+    }
 }
+
+function Start-OfficeDeploymentToolExtraction {
+    <#
+    .SYNOPSIS
+        Extracts the Office Deployment Tool to a version-specific directory.
+
+    .DESCRIPTION
+        This function extracts the Office Deployment Tool (ODT) executable to a versioned directory.
+        It performs the following tasks:
+        - Creates a version-specific extraction directory
+        - Extracts the ODT files using the /quiet /extract switches
+        - Verifies the extraction by checking for setup.exe
+        - Returns extraction details including paths and version information
+
+    .PARAMETER OfficeDeploymentToolExecutable
+        The full path to the downloaded Office Deployment Tool executable file.
+        This should be the self-extracting exe downloaded from Microsoft.
+
+    .PARAMETER ExtractionPath
+        The base path where the Office Deployment Tool will be extracted.
+        A version-specific subdirectory will be created under this path.
+
+    .OUTPUTS
+        [PSCustomObject] containing:
+        - ExtractionPath: The full path to the version-specific extraction directory
+        - SetupFilePath: The full path to the extracted setup.exe
+        - LatestOfficeDeploymentToolVersion: The version number of the extracted ODT
+
+    .EXAMPLE
+        PS C:\> $extractionInfo = Start-OfficeDeploymentToolExtraction `
+            -OfficeDeploymentToolExecutable "C:\Temp\officedeploymenttool.exe" `
+            -ExtractionPath "C:\ODT"
+
+        Extracts the ODT to a version-specific folder under C:\ODT and returns the extraction details.
+    #>
+
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $OfficeDeploymentToolExecutable,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]
+        $ExtractionPath
+    )
+
+    begin {
+        # Construct a versioned extraction path using the version of the Office Deployment Tool executable
+        $officeDeploymentToolVersionedExtractionPath = Join-Path -Path $extractionPath -ChildPath (Get-Item $officeDeploymentToolExecutable).VersionInfo.ProductVersion
+        # Construct the "setup.exe" path
+        $setupFilePath = Join-Path -Path $officeDeploymentToolVersionedExtractionPath -ChildPath 'setup.exe'
+        # Construct extraction arguments
+        $extractionArguments = "/quiet /extract:`"$officeDeploymentToolVersionedExtractionPath`""
+    }
+
+    process {
+        try {
+            if (-not(Test-Path -Path $officeDeploymentToolVersionedExtractionPath)) {
+                Write-Verbose "Creating directory: $officeDeploymentToolVersionedExtractionPath"
+                New-Item -Path $officeDeploymentToolVersionedExtractionPath -ItemType Directory -Force | Out-Null
+            }
+
+            # Extract Office Deployment Tool files
+            Write-Verbose "Extracting Office Deployment Tool to: $officeDeploymentToolVersionedExtractionPath"
+            Start-Process -FilePath $officeDeploymentToolExecutable -ArgumentList $extractionArguments -Wait -ErrorAction Stop
+            # Verify extraction
+            if (Test-Path -Path $setupFilePath) {
+                Write-Verbose "Successfully extracted Office Deployment Tool to: $officeDeploymentToolVersionedExtractionPath"
+
+            }
+            else {
+                throw 'Extraction failed - "setup.exe" not found'
+            }
+        }
+        catch {
+            Write-Warning 'Failed to extract Office Deployment Tool'
+            throw $($_.Exception.Message)
+        }
+    }
+
+    end {
+        [PSCustomObject] @{
+            ExtractionPath                    = $officeDeploymentToolVersionedExtractionPath
+            SetupFilePath                     = $setupFilePath
+            LatestOfficeDeploymentToolVersion = [version](Get-Item -Path "$officeDeploymentToolVersionedExtractionPath\setup.exe").VersionInfo.ProductVersion
+        }
+    }
+}
+
+Write-Host 'Initiating Office application content update process' -ForegroundColor Cyan
+
+$officeDeploymentToolDownloadUrl = Get-OfficeDeploymentToolDownloadUrl
+
+$officeDeploymentToolExecutableDownload = Start-OfficeDeploymentToolDownload -OfficeDeploymentToolDownloadInformation $officeDeploymentToolDownloadUrl -DestinationPath $officeDeploymentToolExtractionPath
+
+$officeDeploymentToolInformation = Start-OfficeDeploymentToolExtraction -OfficeDeploymentToolExecutable $officeDeploymentToolExecutableDownload -ExtractionPath $officeDeploymentToolExtractionPath
+
+# Compare the current version of the Office Deployment Tool executable with the latest version and update if necessary
+try {
+    # Get the current version of the Office Deployment Tool executable
+    [version]$currentOfficeDeploymentToolVersion = (Get-Item -Path (Join-Path $officeContentPath -ChildPath 'setup.exe') -ErrorAction Stop).VersionInfo.ProductVersion
+
+    if ($officeDeploymentToolInformation.LatestOfficeDeploymentToolVersion -gt $currentOfficeDeploymentToolVersion) {
+        Write-Warning 'Newer version of Office Deployment Tool available - updating content source'
+
+        Write-Verbose "Current Office Deployment Tool version: $currentOfficeDeploymentToolVersion"
+        Write-Verbose "Latest Office Deployment Tool version: $($officeDeploymentToolInformation.LatestOfficeDeploymentToolVersion)"
+
+        try {
+            Copy-Item -Path $officeDeploymentToolInformation.SetupFilePath -Destination $officeContentPath -Force -ErrorAction Stop
+        }
+        catch {
+            Write-Warning 'There was an error updating the Office Deployment Tool executable in application content source'
+            throw $($_.Exception.Message)
+        }
+
+        Write-Host 'Successfully updated Office Deployment Tool executable in application content source' -ForegroundColor Cyan
+    }
+    else {
+        Write-Host 'Office Deployment Tool version is up to date' -ForegroundColor Green
+    }
+}
+catch {
+    Write-Warning 'Failed to compare Office Deployment Tool versions'
+    throw $($_.Exception.Message)
+}
+
+# Clean up extracted files
+try {
+    Write-Verbose "Removing extracted Office Deployment Tool files from: $($officeDeploymentToolInformation.ExtractionPath)"
+
+    Remove-Item -Path $officeDeploymentToolInformation.ExtractionPath -Recurse -Force -ErrorAction Stop
+    Remove-Item -Path $officeDeploymentToolExecutableDownload -Force -ErrorAction Stop
+}
+catch {
+    Write-Warning "Failed to remove extracted Office Deployment Tool files. Please remove them manually - $($_.Exception.Message)"
+}
+
+# Detect current version information for existing Office application content
+try {
+    Write-Verbose 'Detecting current version information for existing Office application'
+
+    $officeDataFolderRoot = Join-Path -Path $officeContentPath -ChildPath 'office\data'
+    $currentOfficeDataFolder = Get-ChildItem -Path $officeDataFolderRoot -Directory -ErrorAction Stop
+    $currentOfficeDataFile = Get-ChildItem -Path $officeDataFolderRoot -Filter 'v*_*.cab' -ErrorAction Stop
+}
+catch {
+    Write-Warning 'Failed to detect current version information for existing Office application'
+    throw $($_.Exception.Message)
+}
+
+# Update Office application content based on configuration file
+try {
+    Write-Verbose "Updating application content based on configuration file: $officeConfigurationFile"
+
+    $setupExecutablePath = Join-Path -Path $officeContentPath -ChildPath 'setup.exe'
+
+    Start-Process -FilePath $setupExecutablePath -ArgumentList "/download $officeConfigurationFile" -WorkingDirectory $officeContentPath -Wait -NoNewWindow -ErrorAction Stop
+}
+catch {
+    Write-Warning 'Failed to update the Office application content.'
+    throw $($_.Exception.Message)
+}
+
+# Check if new content was downloaded and remove old content if necessary
+try {
+    Write-Verbose 'Checking if new content was downloaded and removing old content if necessary.'
+
+    # Check if more than one data folder exists
+    if ((Get-ChildItem -Path $officeDataFolderRoot -Directory).Count -ge 2) {
+        Write-Verbose "Removing old content from: $($officeDataFolderRoot.Name)"
+        # Remove old data folder
+        Write-Verbose "Removing old data folder: $($currentOfficeDataFolder.Name)"
+        Remove-Item -Path $currentOfficeDataFolder.FullName -Recurse -Force -ErrorAction Stop
+        # Remove old cab file
+        Write-Verbose "Removing old cab file: $($currentOfficeDataFile.Name)"
+        Remove-Item -Path $currentOfficeDataFile.FullName -Force -ErrorAction Stop
+
+        $latestOfficeDataFolder = Get-ChildItem -Path $officeDataFolderRoot -Directory -ErrorAction Stop
+
+        Write-Host "Successfully updated Office application content from $($currentOfficeDataFolder.Name) to $($latestOfficeDataFolder.Name)" -ForegroundColor Green
+    }
+
+    # If only one data folder exists, set the latest data folder to the current data folder
+    else {
+        $latestOfficeDataFolder = $currentOfficeDataFolder
+    }
+}
+catch {
+    Write-Warning 'Failed to remove old content from the Office application content source.'
+    throw $($_.Exception.Message)
+}
+
+$siteCode = Get-ConfigurationManagerSiteCode -SiteServer $siteServer
+
+Import-ConfigurationManagerModule -SiteServer $siteServer -SiteCode $siteCode
+
+# Set the current location to the Configuration Manager drive
+try {
+    Set-Location -Path ($siteCode + ':') -ErrorAction Stop -Verbose:$false
+}
+catch {
+    Write-Warning 'Failed to set the current location to the Configuration Manager drive'
+    throw $($_.Exception.Message)
+}
+
+# Get the application and application deployment type details
+try {
+    $officeApplication = Get-CMApplication -Name $officeApplicationName -Fast -ErrorAction Stop -Verbose:$false
+
+    if ($null -eq $officeApplication) {
+        throw "No application found with the name: `"$officeApplicationName`". Please make sure `"$officeApplicationName`" is a valid application name in Configuration Manager."
+    }
+
+    $officeApplicationDeploymentType = Get-CMDeploymentType -ApplicationName $officeApplicationName -ErrorAction Stop -Verbose:$false
+
+    if ($null -eq $officeApplicationDeploymentType) {
+        throw "No deployment type found for the Office application: `"$officeApplicationName`". Please make sure `"$officeApplicationName`" is a valid Office application name in Configuration Manager or that it has a deployment type."
+    }
+}
+catch {
+    Write-Warning 'Failed to retrieve the Office application information'
+    throw $($_.Exception.Message)
+}
+
+# Update application metadata and detection method
+if ($PSBoundParameters.ContainsKey('UpdateConfigurationManagerDetectionMethod')) {
+    Write-Host "Updating application metadata and detection method for: `"$officeApplicationName`"" -ForegroundColor Magenta
+
+    # Update the software version for the Office application metadata
+    if ($officeApplication.SoftwareVersion -ne $latestOfficeDataFolder.Name) {
+        try {
+            Write-Verbose 'Updating Office application metadata'
+            Set-CMApplication -InputObject $officeApplication -SoftwareVersion $($latestOfficeDataFolder.Name) -ErrorAction Stop -Verbose:$false
+        }
+        catch {
+            Write-Warning 'Failed to update the software version for the Office application metadata'
+            throw $($_.Exception.Message)
+        }
+    }
+
+    # Create a new registry detection clause for the Office application
+    try {
+        Write-Verbose "Creating new registry detection clause deployment type for: `"$($officeApplicationDeploymentType.LocalizedDisplayName)`""
+
+        $detectionClauseArguments = @{
+            ExpressionOperator = 'GreaterEquals'
+            Hive               = 'LocalMachine'
+            KeyName            = 'Software\Microsoft\Office\ClickToRun\Configuration'
+            PropertyType       = 'Version'
+            ValueName          = 'VersionToReport'
+            ExpectedValue      = $latestOfficeDataFolder.Name
+            Value              = $true
+            ErrorAction        = 'Stop'
+            Verbose            = $false
+        }
+
+        $newRegistryDetectionClause = New-CMDetectionClauseRegistryKeyValue @detectionClauseArguments
+    }
+    catch {
+        Write-Warning 'Failed to create a new registry detection clause'
+        throw $($_.Exception.Message)
+    }
+
+    # Update the detection method for the Office application deployment type
+    try {
+        Write-Verbose "Updating detection method for deployment type for: `"$($officeApplicationDeploymentType.LocalizedDisplayName)`""
+
+        Write-Verbose "Retrieving current registry detection clause from the deployment type: `"$($officeApplicationDeploymentType.LocalizedDisplayName)`""
+
+        $currentRegistryDetectionClause = ([xml]$officeApplicationDeploymentType.SDMPackageXML).AppMgmtDigest.DeploymentType.Installer.CustomData.EnhancedDetectionMethod.Settings.SimpleSetting | Where-Object { $_.DataType -eq 'Version' } | Select-Object -ExpandProperty LogicalName
+
+        Write-Verbose "Current registry detection clause name: $currentRegistryDetectionClause"
+
+        Write-Verbose 'Removing current registry detection clause and adding new detection clause'
+
+        switch ($officeApplicationDeploymentType.Technology) {
+            'MSI' {
+                Set-CMMsiDeploymentType -InputObject $officeApplicationDeploymentType -RemoveDetectionClause $currentRegistryDetectionClause -AddDetectionClause $newRegistryDetectionClause -ErrorAction Stop -Verbose:$false
+            }
+            'Script' {
+                Set-CMScriptDeploymentType -InputObject $officeApplicationDeploymentType -RemoveDetectionClause $currentRegistryDetectionClause -AddDetectionClause $newRegistryDetectionClause -ErrorAction Stop -Verbose:$false
+            }
+            default {
+                throw "Unsupported deployment type technology: $($officeApplicationDeploymentType.Technology)"
+            }
+        }
+    }
+    catch {
+        Write-Warning "Failed to update the detection method for deployment type: $($officeApplicationDeploymentType.LocalizedDisplayName)"
+        throw $($_.Exception.Message)
+    }
+}
+
+try {
+    Write-Host "Beginning content distribution for Office application: '$officeApplicationName'" -ForegroundColor Magenta
+
+    Update-CMDistributionPoint -ApplicationName $officeApplicationName -DeploymentTypeName $officeApplicationDeploymentType.LocalizedDisplayName -ErrorAction Stop -Verbose:$false
+
+    Write-Host "Successfully started the content distribution for Office application: `"$officeApplicationName`"" -ForegroundColor Green
+}
+catch {
+    Write-Warning 'Failed to start the content distribution for the Office application'
+    throw $($_.Exception.Message)
+}
+
+Write-Host 'Office application content update process completed' -ForegroundColor Cyan
+
+Set-Location $env:SystemDrive
